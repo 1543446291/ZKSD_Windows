@@ -1,0 +1,176 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master, main ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: '5.15.2'
+        arch: 'win64_mingw81'
+        setup-python: 'false'
+        
+    - name: Install MinGW-w64
+      run: choco install -y mingw --version=8.1.0
+      
+    - name: Configure project
+      shell: cmd
+      run: |
+        @echo off
+        rem 从 Qt5_DIR 去掉 \lib\cmake，得到 Qt 根目录
+        set "QT_ROOT=%Qt5_DIR:\lib\cmake=%"
+        set "QT_BIN=%QT_ROOT%\bin"
+        set "PATH=%QT_BIN%;%PATH%"
+        set "PATH=C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin;%PATH%"
+        echo Qt bin: %QT_BIN%
+        qmake --version
+        g++ --version
+        qmake vesc_tool.pro CONFIG+=release_win
+        
+    - name: Build
+      shell: cmd
+      run: |
+        @echo off
+        set "PATH=C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin;%PATH%"
+        mingw32-make -j4
+        
+    - name: Deploy Qt DLLs
+      shell: cmd
+      run: |
+        @echo off
+        rem 从 Qt5_DIR 去掉 \lib\cmake，得到 Qt 根目录
+        rem Qt5_DIR = D:\a\vesc_tool\Qt\5.15.2\mingw81_64\lib\cmake
+        rem 需要得到: D:\a\vesc_tool\Qt\5.15.2\mingw81_64
+        set "QT_ROOT=%Qt5_DIR:\lib\cmake=%"
+        set "QT_BIN=%QT_ROOT%\bin"
+        set "PATH=%QT_BIN%;%PATH%"
+        
+        echo ===== Qt Paths =====
+        echo Qt5_DIR=%Qt5_DIR%
+        echo QT_ROOT=%QT_ROOT%
+        echo QT_BIN=%QT_BIN%
+        
+        rem 验证路径
+        if exist "%QT_BIN%\windeployqt.exe" (
+          echo [OK] Found windeployqt.exe
+        ) else (
+          echo [ERROR] windeployqt.exe not found in %QT_BIN%
+          echo Listing Qt root directory:
+          if exist "%QT_ROOT%" (
+            dir "%QT_ROOT%" /b
+          )
+        )
+        
+        if exist build\win\*.exe (
+          echo ===== Using windeployqt to deploy Qt DLLs =====
+          for %%f in (build\win\*.exe) do (
+            echo Deploying Qt DLLs for %%~nf.exe...
+            "%QT_BIN%\windeployqt.exe" --release --no-compiler-runtime --dir build\win --qmldir . "%%f"
+            if errorlevel 1 (
+              echo [WARN] windeployqt failed, trying manual copy...
+              if exist "%QT_BIN%" (
+                echo Copying Qt DLLs manually from %QT_BIN%...
+                xcopy "%QT_BIN%\Qt*.dll" build\win\ /Y /I
+                if exist "%QT_ROOT%\plugins\platforms" (
+                  if not exist build\win\platforms (
+                    mkdir build\win\platforms
+                  )
+                  xcopy "%QT_ROOT%\plugins\platforms\*.dll" build\win\platforms\ /Y /I
+                )
+                if exist "%QT_ROOT%\plugins\imageformats" (
+                  if not exist build\win\imageformats (
+                    mkdir build\win\imageformats
+                  )
+                  xcopy "%QT_ROOT%\plugins\imageformats\*.dll" build\win\imageformats\ /Y /I
+                )
+              ) else (
+                echo [ERROR] Qt bin directory not found: %QT_BIN%
+              )
+            )
+          )
+          echo ===== Verifying Qt DLLs =====
+          dir build\win\Qt*.dll /b
+          if exist build\win\platforms (
+            echo Platform plugins:
+            dir build\win\platforms\*.dll /b
+          )
+        ) else (
+          echo [ERROR] No exe file found in build\win
+          dir build\win
+        )
+        
+    - name: Copy MinGW DLLs
+      shell: cmd
+      run: |
+        @echo off
+        set "PATH=C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin;%PATH%"
+        set "MINGW_BIN=C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin"
+        
+        if exist build\win\*.exe (
+          echo ===== Copying MinGW DLLs =====
+          if exist "%MINGW_BIN%\libgcc_s_seh-1.dll" (
+            copy "%MINGW_BIN%\libgcc_s_seh-1.dll" build\win\ /Y
+            echo [OK] Copied libgcc_s_seh-1.dll
+          ) else (
+            echo [WARN] libgcc_s_seh-1.dll not found in %MINGW_BIN%
+          )
+          if exist "%MINGW_BIN%\libstdc++-6.dll" (
+            copy "%MINGW_BIN%\libstdc++-6.dll" build\win\ /Y
+            echo [OK] Copied libstdc++-6.dll
+          ) else (
+            echo [WARN] libstdc++-6.dll not found in %MINGW_BIN%
+          )
+          if exist "%MINGW_BIN%\libwinpthread-1.dll" (
+            copy "%MINGW_BIN%\libwinpthread-1.dll" build\win\ /Y
+            echo [OK] Copied libwinpthread-1.dll
+          ) else (
+            echo [WARN] libwinpthread-1.dll not found in %MINGW_BIN%
+          )
+          echo ===== Final DLL list =====
+          dir build\win\*.dll /b
+        ) else (
+          echo [ERROR] No exe file found in build\win
+        )
+        
+    - name: Find executable
+      shell: cmd
+      run: |
+        @echo off
+        dir /s /b *.exe
+        if exist build\win\*.exe (
+          dir /b build\win\*.exe
+        )
+        
+    - name: List all files before upload
+      shell: cmd
+      run: |
+        @echo off
+        echo ===== All files in build\win =====
+        if exist build\win (
+          dir build\win /s /b
+        )
+        echo ===== DLL files =====
+        if exist build\win\*.dll (
+          dir build\win\*.dll /b /s
+        )
+        echo ===== EXE files =====
+        if exist build\win\*.exe (
+          dir build\win\*.exe /b /s
+        )
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: vesc-tool-windows
+        path: build/win/**
+        retention-days: 7
